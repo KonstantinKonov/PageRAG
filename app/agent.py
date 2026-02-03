@@ -6,7 +6,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.exceptions import OutputParserException
 
 from app.config import settings
-from app.llm_schemas import ChunkMetadata, RankingKeywords, SearchQueries, QueryScope
+from app.llm_schemas import (
+    ChunkMetadata,
+    RankingKeywords,
+    SearchQueries,
+    QueryScope,
+    GradeDecision,
+    RewriteQuery,
+)
 from app.logger import setup_logger
 
 
@@ -255,3 +262,86 @@ def generate_answer(user_query: str, retrieved_docs: str) -> str:
     logger.info(f"[generate_answer] Generated answer in {elapsed:.2f}s, length: {len(content)} chars")
     logger.debug(f"[generate_answer] Answer content:\n{content}")
     return content
+
+
+def grade_documents(user_query: str, retrieved_docs: str) -> GradeDecision:
+    start_time = time.time()
+    logger.debug(
+        f"[grade_documents] Input query: {user_query}, docs length: {len(retrieved_docs)} chars"
+    )
+
+    llm_structured = llm.with_structured_output(GradeDecision)
+    prompt = f"""You are a document relevance grader.
+
+TASK: Evaluate if the retrieved documents are relevant to answer the user's question.
+
+USER QUESTION: {user_query}
+
+RETRIEVED DOCUMENTS:
+{retrieved_docs}
+
+CRITERIA:
+- is_relevant = True: Documents contain information that can answer the question
+- is_relevant = False: Documents are completely irrelevant, off-topic, or empty
+
+Respond ONLY in JSON with this schema:
+{{"is_relevant": true/false, "reasoning": "brief explanation"}}
+"""
+    try:
+        result = llm_structured.invoke(
+            prompt,
+            options={
+                "num_predict": 128,
+                "temperature": 0,
+                "num_ctx": settings.OLLAMA_CONTEXT_LENGTH,
+            },
+            format="json",
+        )
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[grade_documents] is_relevant={result.is_relevant} in {elapsed:.2f}s reason={result.reasoning}"
+        )
+        return result
+    except (OutputParserException, Exception) as e:
+        elapsed = time.time() - start_time
+        logger.warning(f"[grade_documents] Failed in {elapsed:.2f}s: {e}")
+        return GradeDecision(is_relevant=True, reasoning="fallback_allow")
+
+
+def rewrite_query(user_query: str) -> str:
+    start_time = time.time()
+    logger.debug(f"[rewrite_query] Input query: {user_query}")
+
+    llm_structured = llm.with_structured_output(RewriteQuery)
+    prompt = f"""You are a query rewriting expert.
+
+TASK: Rewrite the user's question to make it more specific and targeted for document retrieval.
+
+ORIGINAL QUESTION: {user_query}
+
+INSTRUCTIONS:
+- Make the query more specific with keywords
+- Add relevant financial terms (revenue, profit, earnings, cash flow, etc.)
+- Preserve the original intent
+- Keep it concise (5-12 words)
+
+Return ONLY in JSON with this schema:
+{{"rewritten_query": "..."}}"""
+    try:
+        response = llm_structured.invoke(
+            prompt,
+            options={
+                "num_predict": 64,
+                "temperature": 0,
+                "num_ctx": settings.OLLAMA_CONTEXT_LENGTH,
+            },
+            format="json",
+        )
+        rewritten = response.rewritten_query.strip()
+        elapsed = time.time() - start_time
+        logger.info(f"[rewrite_query] Rewritten in {elapsed:.2f}s: {rewritten}")
+        return rewritten or user_query
+    except (OutputParserException, Exception) as e:
+        elapsed = time.time() - start_time
+        logger.warning(f"[rewrite_query] Failed in {elapsed:.2f}s: {e}")
+        return user_query

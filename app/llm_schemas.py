@@ -56,3 +56,20 @@ class QueryScope(BaseModel):
         description="Whether the user query is in-scope for financial RAG on SEC filings.",
     )
     reason: Optional[str] = Field(default=None, description="Short reason for the decision.")
+
+
+class GradeDecision(BaseModel):
+    is_relevant: bool = Field(
+        ...,
+        description="True if documents are relevant to answer the question, False otherwise.",
+    )
+    reasoning: str = Field(
+        ...,
+        description="Brief explanation of why documents are relevant or not.",
+    )
+
+
+class RewriteQuery(BaseModel):
+    rewritten_query: str = Field(
+        ..., description="Rewritten query optimized for document retrieval."
+    )
