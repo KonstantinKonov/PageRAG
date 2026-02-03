@@ -2,6 +2,7 @@ import os
 import time
 from pathlib import Path
 from typing import List
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -17,14 +18,18 @@ from app.logger import setup_logger
 
 
 logger = setup_logger(__name__)
-app = FastAPI(title=settings.APP_NAME)
 
 
-@app.on_event("startup")
-async def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     await init_db_extensions()
     ensure_upload_dir()
     os.makedirs(settings.DEBUG_LOG_DIR, exist_ok=True)
+
+    yield
+
+
+app = FastAPI(lifespan=lifespan, title=settings.APP_NAME)
 
 
 @app.post("/ingest", response_model=IngestResponse)
