@@ -11,7 +11,7 @@ FastAPI сервис для RAG по финансовой отчетности (
 
 ## Архитектура
 ```mermaid
-flowchart LR
+flowchart TD
     User[User] -->|"POST /query"| API[FastAPI]
     API --> Scope[ScopeCheck]
     Scope --> Decompose[DecomposeQuery]
