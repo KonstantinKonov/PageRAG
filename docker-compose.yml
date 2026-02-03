@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: pagerag
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pagerag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      OLLAMA_KEEP_ALIVE: "24h"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_CONTEXT_LENGTH: "2048"
+    entrypoint: /bin/sh
+    command: -c "ollama serve & sleep 2 && (ollama pull qwen3:8b-q4_K_M || true) && (ollama pull nomic-embed-text || true) && wait"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pagerag
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_LLM_MODEL: qwen3:8b-q4_K_M
+      OLLAMA_EMBED_MODEL: nomic-embed-text
+      UPLOAD_DIR: data/uploads
+      DEBUG_LOG_DIR: debug_logs
+      LOG_LEVEL: INFO
+      LOG_FILE_PATH: debug_logs/pipeline.log
+      LOG_FILE_OVERWRITE: "true"
+      LOG_FILE_LEVEL: DEBUG
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      OLLAMA_REASONING: "false"
+      OLLAMA_NUM_PREDICT: "1024"
+    volumes:
+      - ./data/uploads:/app/data/uploads
+      - ./debug_logs:/app/debug_logs
+    ports:
+      - "8000:8000"
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      - api
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+
+volumes:
+  pg_data:
+  ollama_data:
