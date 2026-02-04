@@ -84,7 +84,6 @@ async def query_documents(
         logger.info(f"[/query] Out-of-scope query blocked: {scope.reason}")
         return QueryResponse(
             answer="Запрос не относится к финансовым данным из SEC-отчётности. "
-            "Пожалуйста, уточните компанию, период и финансовую метрику."
         )
 
     graph = get_graph()
@@ -94,7 +93,14 @@ async def query_documents(
         final_state = state
         logger.debug(f"[/query] Graph state keys: {list(state.keys())}")
 
-    answer = (final_state or {}).get("final_answer", "")
+    reflexion_answer = (final_state or {}).get("reflexion_answer", "")
+    final_answer = (final_state or {}).get("final_answer", "")
+    reflexion_complete = (final_state or {}).get("reflexion_complete", False)
+
+    if reflexion_complete and reflexion_answer and len(reflexion_answer) >= len(final_answer):
+        answer = reflexion_answer
+    else:
+        answer = final_answer or reflexion_answer
     
     elapsed = time.time() - start_time
     logger.info(f"[/query] Completed in {elapsed:.2f}s, answer length: {len(answer)} chars")

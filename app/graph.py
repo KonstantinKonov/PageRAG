@@ -9,6 +9,8 @@ from app.agent import (
     grade_documents,
     rewrite_query,
     generate_answer,
+    draft_reflexion_answer,
+    revise_reflexion_answer,
 )
 from app.retrieval import search_docs, write_debug_log
 from app.web_search import web_search
@@ -32,6 +34,10 @@ class QueryState(TypedDict, total=False):
     web_text: str
     combined_context: List[str]
     final_answer: str
+    iteration_count: int
+    reflexion_queries: List[str]
+    reflexion_complete: bool
+    reflexion_answer: str
 
 
 def _format_docs(docs) -> str:
@@ -63,6 +69,10 @@ async def decompose_node(state: QueryState) -> QueryState:
         "current_query": current,
         "rewrite_attempted": False,
         "combined_context": [],
+        "iteration_count": 0,
+        "reflexion_queries": [],
+        "reflexion_complete": False,
+        "reflexion_answer": "",
     }
 
 
@@ -148,6 +158,63 @@ async def answer_node(state: QueryState) -> QueryState:
     return {"final_answer": answer}
 
 
+async def reflexion_draft_node(state: QueryState) -> QueryState:
+    combined_retrieved = "\n\n".join(state.get("combined_context", []))
+    response = draft_reflexion_answer(state["query"], combined_retrieved)
+    logger.info(
+        f"[graph.reflexion.draft] complete={response.is_complete} queries={len(response.search_queries)}"
+    )
+    return {
+        "reflexion_answer": response.answer,
+        "reflexion_queries": response.search_queries,
+        "reflexion_complete": response.is_complete,
+        "iteration_count": 1,
+    }
+
+
+async def reflexion_retrieve_node(state: QueryState) -> QueryState:
+    search_queries = state.get("reflexion_queries", [])
+    if not search_queries:
+        return {"retrieved_docs_text": ""}
+
+    all_retrieved = []
+    for query in search_queries:
+        filters = extract_filters(query)
+        keywords = generate_ranking_keywords(query)
+        docs = await search_docs(
+            state["session"],
+            query,
+            filters=filters,
+            ranking_keywords=keywords,
+            k=state["k"],
+            fetch_k=settings.DEFAULT_FETCH_K,
+        )
+        write_debug_log(docs)
+        chunk_text = _format_docs(docs)
+        if chunk_text:
+            all_retrieved.append(f"--- Query: {query} ---\n{chunk_text}")
+
+    return {"retrieved_docs_text": "\n\n".join(all_retrieved)}
+
+
+async def reflexion_revise_node(state: QueryState) -> QueryState:
+    response = revise_reflexion_answer(
+        state["query"],
+        state.get("retrieved_docs_text", ""),
+        state.get("reflexion_answer", ""),
+    )
+    iteration = state.get("iteration_count", 1) + 1
+    logger.info(
+        f"[graph.reflexion.revise] complete={response.is_complete} queries={len(response.search_queries)} iteration={iteration}"
+    )
+    return {
+        "reflexion_answer": response.answer,
+        "reflexion_queries": response.search_queries,
+        "reflexion_complete": response.is_complete,
+        "iteration_count": iteration,
+    }
+
+
 def _route_after_grade(state: QueryState) -> str:
     if state.get("is_relevant", False):
         return "append_context"
@@ -158,7 +225,27 @@ def _route_after_grade(state: QueryState) -> str:
 
 def _route_after_append(state: QueryState) -> str:
     current_query = state.get("current_query")
-    return "answer" if not current_query else "retrieve"
+    return "reflexion_draft" if not current_query else "retrieve"
+
+
+def _route_after_reflexion_draft(state: QueryState) -> str:
+    if state.get("reflexion_complete", False):
+        return "answer"
+    if not state.get("reflexion_queries"):
+        return "answer"
+    if state.get("iteration_count", 0) >= 2:
+        return "answer"
+    return "reflexion_retrieve"
+
+
+def _route_after_reflexion_revise(state: QueryState) -> str:
+    if state.get("reflexion_complete", False):
+        return "answer"
+    if not state.get("reflexion_queries"):
+        return "answer"
+    if state.get("iteration_count", 0) >= 2:
+        return "answer"
+    return "reflexion_retrieve"
 
 
 def build_graph():
@@ -170,6 +257,9 @@ def build_graph():
     builder.add_node("web_search", web_search_node)
     builder.add_node("append_context", append_context_node)
     builder.add_node("answer", answer_node)
+    builder.add_node("reflexion_draft", reflexion_draft_node)
+    builder.add_node("reflexion_retrieve", reflexion_retrieve_node)
+    builder.add_node("reflexion_revise", reflexion_revise_node)
 
     builder.add_edge(START, "decompose")
     builder.add_edge("decompose", "retrieve")
@@ -179,7 +269,20 @@ def build_graph():
     )
     builder.add_edge("rewrite", "retrieve")
     builder.add_edge("web_search", "append_context")
-    builder.add_conditional_edges("append_context", _route_after_append, ["retrieve", "answer"])
+    builder.add_conditional_edges(
+        "append_context", _route_after_append, ["retrieve", "reflexion_draft"]
+    )
+    builder.add_conditional_edges(
+        "reflexion_draft",
+        _route_after_reflexion_draft,
+        ["answer", "reflexion_retrieve"],
+    )
+    builder.add_edge("reflexion_retrieve", "reflexion_revise")
+    builder.add_conditional_edges(
+        "reflexion_revise",
+        _route_after_reflexion_revise,
+        ["answer", "reflexion_retrieve"],
+    )
     builder.add_edge("answer", END)
 
     return builder.compile()

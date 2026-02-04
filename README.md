@@ -1,12 +1,13 @@
 # PageRAG
 
-FastAPI сервис для RAG по финансовой отчетности (10-K/10-Q/8-K) с векторным поиском в Postgres (pgvector), Ollama для LLM/эмбеддингов и corrective‑циклом (grade → rewrite → retry → web‑fallback).
+FastAPI сервис для RAG по финансовой отчетности (10-K/10-Q/8-K) с векторным поиском в Postgres (pgvector), Ollama для LLM/эмбеддингов и агентной оркестрацией через LangGraph (corrective + reflexion).
 
 ## Возможности
 - Загрузка PDF и нарезка на страницы/чанки с сохранением в Postgres
 - Векторный поиск + MMR + BM25 переранжирование
 - Corrective RAG: проверка релевантности, переписывание запроса, один ретрай
 - Web‑fallback через Tavily API (если локальные документы нерелевантны)
+- Reflexion RAG: self‑critique, генерация follow‑up запросов и до 2 итераций уточнения
 - Markdown‑ответы на русском
 
 ## Архитектура
@@ -17,13 +18,17 @@ flowchart TD
     Scope --> Decompose[DecomposeQuery]
     Decompose --> Retrieve[VectorSearch]
     Retrieve --> Grade[RelevanceGrader]
-    Grade -->|Relevant| Answer[GenerateAnswer]
+    Grade -->|Relevant| Reflexion[ReflexionDraft]
     Grade -->|NotRelevant| Rewrite[RewriteQuery]
     Rewrite --> Retry[VectorSearchRetry]
     Retry --> Grade2[RelevanceGrader]
-    Grade2 -->|Relevant| Answer
+    Grade2 -->|Relevant| Reflexion
     Grade2 -->|NotRelevant| Web[TavilySearch]
-    Web --> Answer
+    Web --> Reflexion
+    Reflexion -->|Complete| Answer[GenerateAnswer]
+    Reflexion -->|NeedsMore| ReflexionRetrieve[ReflexionRetrieve]
+    ReflexionRetrieve --> ReflexionRevise[ReflexionRevise]
+    ReflexionRevise -->|CompleteOrMaxIter| Answer
     Answer --> Response[Response]
 
     User -->|"POST /ingest"| Ingest[IngestPDF]

@@ -13,6 +13,7 @@ from app.llm_schemas import (
     QueryScope,
     GradeDecision,
     RewriteQuery,
+    ReflexionAnswer,
 )
 from app.logger import setup_logger
 
@@ -345,3 +346,117 @@ Return ONLY in JSON with this schema:
         elapsed = time.time() - start_time
         logger.warning(f"[rewrite_query] Failed in {elapsed:.2f}s: {e}")
         return user_query
+
+
+def draft_reflexion_answer(user_query: str, retrieved_docs: str) -> ReflexionAnswer:
+    start_time = time.time()
+    logger.debug(
+        f"[draft_reflexion_answer] Input query: {user_query}, docs length: {len(retrieved_docs)} chars"
+    )
+
+    llm_structured = llm.with_structured_output(ReflexionAnswer)
+    system_prompt = """Ты финансовый аналитик.
+
+ЗАДАЧА:
+1) Дай подробный ответ (~200-300 слов) на вопрос.
+2) Используй Markdown (заголовки, списки, таблицы при необходимости).
+3) Добавь inline ссылки [1], [2] если в документах есть факты для цитирования, иначе укажи, какие данные нужны.
+4) Проведи критическую рефлексию: что отсутствует и что лишнее.
+5) Если данных недостаточно, сгенерируй 1-3 уточняющих поисковых запроса.
+
+Верни JSON по схеме:
+{
+  "answer": "...",
+  "reflection": {"missing": "...", "superfluous": "..."},
+  "search_queries": ["..."],
+  "is_complete": false
+}
+"""
+    user_prompt = f"Вопрос: {user_query}\n\nДокументы:\n{retrieved_docs}"
+    messages = [SystemMessage(system_prompt), HumanMessage(user_prompt)]
+
+    try:
+        response = llm_structured.invoke(
+            messages,
+            options={
+                "num_predict": settings.OLLAMA_NUM_PREDICT,
+                "temperature": 0.2,
+                "num_ctx": settings.OLLAMA_CONTEXT_LENGTH,
+            },
+            format="json",
+        )
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[draft_reflexion_answer] complete={response.is_complete} in {elapsed:.2f}s queries={len(response.search_queries)}"
+        )
+        return response
+    except (OutputParserException, Exception) as e:
+        elapsed = time.time() - start_time
+        logger.warning(f"[draft_reflexion_answer] Failed in {elapsed:.2f}s: {e}")
+        return ReflexionAnswer(
+            answer="Не удалось сформировать ответ. Попробуйте уточнить запрос.",
+            reflection={"missing": "unknown", "superfluous": "unknown"},
+            search_queries=[],
+            is_complete=True,
+        )
+
+
+def revise_reflexion_answer(
+    user_query: str, retrieved_docs: str, prior_answer: str
+) -> ReflexionAnswer:
+    start_time = time.time()
+    logger.debug(
+        f"[revise_reflexion_answer] Input query: {user_query}, docs length: {len(retrieved_docs)} chars"
+    )
+
+    llm_structured = llm.with_structured_output(ReflexionAnswer)
+    system_prompt = """Ты финансовый аналитик.
+
+ЗАДАЧА:
+1) Перепиши ответ, используя новые документы.
+2) Добавь inline ссылки [1], [2] и список источников, если есть данные.
+3) Проведи рефлексию: что отсутствует и что лишнее.
+4) Если данных всё еще недостаточно, сгенерируй 1-3 уточняющих поисковых запроса.
+
+Если данных достаточно, верни is_complete=true и пустой список search_queries.
+
+ВАЖНО: Верни СТРОГО JSON c ключами:
+{
+  "answer": "...",
+  "reflection": {"missing": "...", "superfluous": "..."},
+  "search_queries": ["..."],
+  "is_complete": false
+}
+Никаких других ключей (например, response/reflections/redundant) не используй.
+"""
+    user_prompt = (
+        f"Вопрос: {user_query}\n\n"
+        f"Предыдущий ответ:\n{prior_answer}\n\n"
+        f"Новые документы:\n{retrieved_docs}"
+    )
+    messages = [SystemMessage(system_prompt), HumanMessage(user_prompt)]
+
+    try:
+        response = llm_structured.invoke(
+            messages,
+            options={
+                "num_predict": settings.OLLAMA_NUM_PREDICT,
+                "temperature": 0.2,
+                "num_ctx": settings.OLLAMA_CONTEXT_LENGTH,
+            },
+            format="json",
+        )
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[revise_reflexion_answer] complete={response.is_complete} in {elapsed:.2f}s queries={len(response.search_queries)}"
+        )
+        return response
+    except (OutputParserException, Exception) as e:
+        elapsed = time.time() - start_time
+        logger.warning(f"[revise_reflexion_answer] Failed in {elapsed:.2f}s: {e}")
+        return ReflexionAnswer(
+            answer=prior_answer,
+            reflection={"missing": "unknown", "superfluous": "unknown"},
+            search_queries=[],
+            is_complete=True,
+        )

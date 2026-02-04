@@ -73,3 +73,19 @@ class RewriteQuery(BaseModel):
     rewritten_query: str = Field(
         ..., description="Rewritten query optimized for document retrieval."
     )
+
+
+class Reflection(BaseModel):
+    missing: str = Field(description="What critical information is missing or incomplete")
+    superfluous: str = Field(description="What information is unnecessary or redundant")
+
+
+class ReflexionAnswer(BaseModel):
+    answer: str = Field(
+        description="Detailed answer with inline citations and references if available."
+    )
+    reflection: Reflection = Field(description="Critical reflection on the answer")
+    search_queries: List[str] = Field(
+        default_factory=list, description="1-3 follow-up search queries if needed"
+    )
+    is_complete: bool = Field(default=False, description="True if answer is complete")
